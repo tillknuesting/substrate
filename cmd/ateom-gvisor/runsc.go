@@ -44,6 +44,21 @@ type runsc struct {
 	durableVolumes []string
 }
 
+// gvisorPlatformEnv selects the runsc platform for gVisor sandboxes.
+// Set ATE_GVISOR_PLATFORM=kvm in the worker environment for hardware
+// virtualization (needs /dev/kvm in the worker pod); unset or anything else
+// keeps runsc's default (systrap).
+const gvisorPlatformEnv = "ATE_GVISOR_PLATFORM"
+
+// platformArgs returns extra runsc global flags for the configured platform.
+// Empty unless ATE_GVISOR_PLATFORM=kvm.
+func platformArgs() []string {
+	if os.Getenv(gvisorPlatformEnv) == "kvm" {
+		return []string{"--platform=kvm"}
+	}
+	return nil
+}
+
 // durableVolumeNames returns the sorted, deduplicated durable-dir volume names
 // mounted by workload containers.
 func durableVolumeNames(spec *ateompb.WorkloadSpec) []string {
@@ -95,6 +110,7 @@ func (r *runsc) cmdCreate(ctx context.Context, out io.Writer, containerName stri
 		// otherwise sizes to all host CPUs). Global flag: before the subcommand.
 		"--cpu-num-from-quota",
 	}
+	args = append(args, platformArgs()...)
 	args = append(args,
 		"create",
 		"-bundle", ateompath.OCIBundlePath(r.actorUID, containerName),
@@ -281,6 +297,8 @@ func (r *runsc) cmdRestore(ctx context.Context, out io.Writer, containerName, ch
 		// Match cmdCreate: size the restored sentry from the cgroup CPU quota.
 		"--cpu-num-from-quota",
 	}
+	// Match cmdCreate: restore onto the same platform the sandbox was created with.
+	restoreArgs = append(restoreArgs, platformArgs()...)
 	restoreArgs = append(restoreArgs,
 		"restore",
 		"-bundle", ateompath.OCIBundlePath(r.actorUID, containerName),

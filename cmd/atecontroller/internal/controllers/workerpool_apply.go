@@ -15,6 +15,7 @@
 package controllers
 
 import (
+	"os"
 	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -229,6 +230,7 @@ func buildDeploymentApplyConfig(wp *atev1alpha1.WorkerPool, otel ateomOTelSettin
 
 	applyWorkerPoolPodTemplate(podSpecAC, containerAC, wp.Spec.Template)
 	maybeApplyMicroVMPodShape(podSpecAC, containerAC, wp.Spec.SandboxClass)
+	maybeApplyGvisorKVMPodShape(podSpecAC, containerAC, wp.Spec.SandboxClass)
 	podSpecAC.WithContainers(containerAC)
 	podSpecAC.WithTerminationGracePeriodSeconds(workerTerminationGracePeriodSeconds)
 
@@ -469,6 +471,37 @@ func maybeApplyMicroVMPodShape(
 		WithOperator(corev1.TolerationOpEqual).
 		WithValue(string(atev1alpha1.SandboxClassMicroVM)).
 		WithEffect(corev1.TaintEffectNoSchedule))
+}
+
+// gvisorPlatformEnv mirrors the worker-side switch in cmd/ateom-gvisor: when
+// the controller runs with ATE_GVISOR_PLATFORM=kvm, gVisor workers get
+// /dev/kvm and are told to use the KVM runsc platform. Anything else keeps
+// runsc defaults (systrap) and no device request, so non-KVM nodes keep working.
+const gvisorPlatformEnv = "ATE_GVISOR_PLATFORM"
+
+// maybeApplyGvisorKVMPodShape grants /dev/kvm to gVisor workers via atelet's
+// device plugin and propagates the platform choice to ateom. No-op unless the
+// controller runs with ATE_GVISOR_PLATFORM=kvm and the pool is gVisor-class
+// (empty class defaults to gVisor).
+func maybeApplyGvisorKVMPodShape(
+	podSpecAC *corev1ac.PodSpecApplyConfiguration,
+	containerAC *corev1ac.ContainerApplyConfiguration,
+	sandboxClass atev1alpha1.SandboxClass,
+) {
+	if os.Getenv(gvisorPlatformEnv) != "kvm" {
+		return
+	}
+	if sandboxClass != "" && sandboxClass != atev1alpha1.SandboxClassGvisor {
+		return
+	}
+	// Same mechanism as the micro-VM shape above: the extended-resource
+	// request both opens the cgroup device gate (via kubelet's device
+	// manager) and keeps the pod off nodes whose atelet doesn't advertise KVM.
+	addDeviceResourceLimits(containerAC, deviceplugin.ResourceKVM)
+	containerAC.WithEnv(corev1ac.EnvVar().
+		WithName(gvisorPlatformEnv).
+		WithValue("kvm"))
+	_ = podSpecAC
 }
 
 // The tun device node a micro-VM worker bind-mounts to build the guest's tap.
